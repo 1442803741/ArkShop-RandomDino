@@ -197,6 +197,34 @@
     }
   },
   "ShopItems": {
+    "random_dino": {
+      "Type": "dino",
+      "Description": "Random dinosaur prize pool",
+      "Price": 100,
+      "Dinos": [
+        {
+          "Blueprint": "Blueprint'/Game/PrimalEarth/Dinos/Carno/Carno_Character_BP.Carno_Character_BP'",
+          "Weight": 50,
+          "MinLevel": 100,
+          "MaxLevel": 150,
+          "Gender": "random",
+          "Neutered": false,
+          "SaddleBlueprint": "Blueprint'/Game/PrimalEarth/CoreBlueprints/Items/Armor/Saddles/PrimalItemArmor_CarnoSaddle.PrimalItemArmor_CarnoSaddle'"
+        },
+        {
+          "Blueprint": "Blueprint'/Game/PrimalEarth/Dinos/Ptero/Ptero_Character_BP.Ptero_Character_BP'",
+          "Weight": 30,
+          "MinLevel": 150,
+          "MaxLevel": 200
+        },
+        {
+          "Blueprint": "Blueprint'/Game/PrimalEarth/Dinos/Para/Para_Character_BP.Para_Character_BP'",
+          "Weight": 20,
+          "MinLevel": 50,
+          "MaxLevel": 100
+        }
+      ]
+    },
     "stryder": {
       "Type": "dino",
       "Description": "Styder Mining Drill/Saddlebags",
