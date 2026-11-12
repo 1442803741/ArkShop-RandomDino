@@ -3,6 +3,11 @@
 #include <Points.h>
 #include <Permissions.h>
 
+#include <cstdint>
+#include <limits>
+#include <random>
+#include <vector>
+
 #include "ArkShop.h"
 #include "DBHelper.h"
 #include "ShopLog.h"
@@ -11,6 +16,121 @@
 
 namespace ArkShop::Store
 {
+	namespace
+	{
+		struct DinoPoolCandidate
+		{
+			const nlohmann::json* entry;
+			std::uint64_t weight;
+			int min_level;
+			int max_level;
+		};
+
+		bool ReadPositiveInt(const nlohmann::json& value, int& result)
+		{
+			if (!value.is_number_integer())
+				return false;
+
+			if (value.is_number_unsigned())
+			{
+				const auto number = value.get<std::uint64_t>();
+				if (number == 0 || number > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+					return false;
+				result = static_cast<int>(number);
+				return true;
+			}
+
+			const auto number = value.get<std::int64_t>();
+			if (number < 1 || number > std::numeric_limits<int>::max())
+				return false;
+
+			result = static_cast<int>(number);
+			return true;
+		}
+
+		bool SelectRandomDino(const nlohmann::json& item_entry, nlohmann::json& selected_entry, int& selected_level)
+		{
+			const auto pool_it = item_entry.find("Dinos");
+			if (pool_it == item_entry.end())
+			{
+				selected_entry = item_entry;
+				selected_level = item_entry.value("Level", 1);
+				return true;
+			}
+
+			if (!pool_it->is_array() || pool_it->empty())
+				return false;
+
+			std::vector<DinoPoolCandidate> candidates;
+			std::uint64_t total_weight = 0;
+
+			for (const auto& candidate : *pool_it)
+			{
+				if (!candidate.is_object())
+					continue;
+
+				const auto blueprint_it = candidate.find("Blueprint");
+				const auto min_it = candidate.find("MinLevel");
+				const auto max_it = candidate.find("MaxLevel");
+				if (blueprint_it == candidate.end() || !blueprint_it->is_string()
+					|| blueprint_it->get<std::string>().empty()
+					|| min_it == candidate.end() || max_it == candidate.end())
+					continue;
+
+				int min_level = 0;
+				int max_level = 0;
+				if (!ReadPositiveInt(*min_it, min_level) || !ReadPositiveInt(*max_it, max_level)
+					|| max_level < min_level)
+					continue;
+
+				std::uint64_t weight = 1;
+				const auto weight_it = candidate.find("Weight");
+				if (weight_it != candidate.end())
+				{
+					if (!weight_it->is_number_integer())
+						continue;
+
+					if (weight_it->is_number_unsigned())
+						weight = weight_it->get<std::uint64_t>();
+					else
+					{
+						const auto signed_weight = weight_it->get<std::int64_t>();
+						if (signed_weight <= 0)
+							continue;
+						weight = static_cast<std::uint64_t>(signed_weight);
+					}
+				}
+
+				if (weight == 0 || total_weight > std::numeric_limits<std::uint64_t>::max() - weight)
+					continue;
+
+				total_weight += weight;
+				candidates.push_back({ &candidate, weight, min_level, max_level });
+			}
+
+			if (candidates.empty() || total_weight == 0)
+				return false;
+
+			static thread_local std::mt19937_64 random_engine(std::random_device{}());
+			std::uniform_int_distribution<std::uint64_t> weight_distribution(1, total_weight);
+			const std::uint64_t roll = weight_distribution(random_engine);
+
+			std::uint64_t cumulative_weight = 0;
+			for (const auto& candidate : candidates)
+			{
+				cumulative_weight += candidate.weight;
+				if (roll <= cumulative_weight)
+				{
+					selected_entry = *candidate.entry;
+					std::uniform_int_distribution<int> level_distribution(candidate.min_level, candidate.max_level);
+					selected_level = level_distribution(random_engine);
+					return true;
+				}
+			}
+
+			return false;
+		}
+	}
 	/**
 	 * \brief Buy an item from shop
 	 */
@@ -219,15 +339,27 @@ namespace ArkShop::Store
 		bool success = false;
 
 		const int price = item_entry.value("Price", 0);
-		const int level = item_entry.value("Level", 1);
-		const bool neutered = item_entry.value("Neutered", false);
-		std::string gender = item_entry.value("Gender", "random");
-		std::string saddleblueprint = item_entry.value("SaddleBlueprint", "");
-		std::string blueprint = item_entry.value("Blueprint", "");
-		bool preventCryo = item_entry.value("PreventCryo", false);
-		const int stryderhead = item_entry.value("StryderHead", -1);
-		const int stryderchest = item_entry.value("StryderChest", -1);
-		nlohmann::json resourceoverrides = item_entry.value("GachaResources", nlohmann::json());
+
+		// A legacy dino item uses its original fields. A Dinos array enables weighted random prizes.
+		// Resolve the prize before charging points so an invalid pool never costs the player anything.
+		nlohmann::json dino_entry;
+		int level = 1;
+		if (!SelectRandomDino(item_entry, dino_entry, level))
+		{
+			AsaApi::GetApiUtils().SendChatMessage(player_controller, GetText("Sender"),
+				FString("Dino prize pool configuration is invalid."));
+			return false;
+		}
+
+		const bool neutered = dino_entry.value("Neutered", item_entry.value("Neutered", false));
+		std::string gender = dino_entry.value("Gender", item_entry.value("Gender", std::string("random")));
+		std::string saddleblueprint = dino_entry.value("SaddleBlueprint", item_entry.value("SaddleBlueprint", std::string("")));
+		std::string blueprint = dino_entry.value("Blueprint", item_entry.value("Blueprint", std::string("")));
+		bool preventCryo = dino_entry.value("PreventCryo", item_entry.value("PreventCryo", false));
+		const int stryderhead = dino_entry.value("StryderHead", item_entry.value("StryderHead", -1));
+		const int stryderchest = dino_entry.value("StryderChest", item_entry.value("StryderChest", -1));
+		nlohmann::json resourceoverrides = dino_entry.value("GachaResources",
+			item_entry.value("GachaResources", nlohmann::json()));
 
 		const int points = Points::GetPoints(eos_id);
 
